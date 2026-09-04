@@ -1,0 +1,11 @@
+requests>=2.31
+pycryptodome>=3.20
+
+# 本地情感分析（sentiment.engine = "local" 时使用）
+snownlp>=0.11.1
+
+# UI 可视化界面
+streamlit>=1.55
+jieba>=0.42.1
+wordcloud>=1.9.5
+matplotlib>=3.10

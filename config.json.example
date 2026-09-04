@@ -1,0 +1,26 @@
+{
+  "llm": {
+    "base_url": "https://api.deepseek.com/v1",
+    "api_key": "sk-你的APIKey",
+    "model": "deepseek-chat",
+    "timeout": 60
+  },
+  "crawler": {
+    "request_sleep": 1.0,
+    "max_retries": 3,
+    "timeout": 15
+  },
+  "run": {
+    "max_songs": 5,
+    "comment_pages": 3,
+    "hot_limit": 20
+  },
+  "sentiment": {
+    "engine": "local",
+    "concurrency": 4,
+    "batch_size": 12,
+    "enabled": true,
+    "local_neg_threshold": 0.4,
+    "local_pos_threshold": 0.6
+  }
+}

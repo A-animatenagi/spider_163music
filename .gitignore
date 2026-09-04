@@ -1,0 +1,21 @@
+# Python 字节码与虚拟环境
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 本地配置（内含真实 API Key，严禁入库）；对外只提交模板 config.json.example
+config.json
+
+# 爬取运行产物与会话缓存
+output/
+
+# 本地 IDE / 工具配置
+.claude/
+.idea/
+.vscode/
+
+# 临时诊断脚本与输出（不入库）
+_diag_wc.py
+_diag_out.txt

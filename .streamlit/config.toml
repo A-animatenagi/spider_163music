@@ -1,0 +1,11 @@
+[theme]
+base = "light"
+
+# 「纸刊·乐评月刊」浅色印刷系统
+# 印红 primaryColor 同时满足：深红作控件填充时白字 AA；纸面 #F4EFE4 / 卡片 #FDFBF4 / 墨字 #1A1612。
+primaryColor = "#E62B2B"
+backgroundColor = "#F4EFE4"
+secondaryBackgroundColor = "#FDFBF4"
+textColor = "#1A1612"
+
+# 说明：中文字体栈由 ui.py 注入的全局 CSS 控制，仅用本地系统字体。
