@@ -1,3 +1,4 @@
+import html
 import io
 import json
 import os
@@ -168,6 +169,19 @@ button[data-baseweb="tab"][aria-selected="true"]{ color:var(--ny-text); font-wei
 [data-testid="stDataFrame"] td{ font-size:.86rem; font-variant-numeric:tabular-nums; }
 [data-testid="stAlert"]{ border-radius:2px; }
 
+/* ===== 歌词阅读框（纸面细墨框，可滚动，原文/译文/罗马音分层） ===== */
+.lyric-box{ background:var(--ny-sheet); border:1px solid var(--ny-text); border-radius:2px;
+  padding:1rem 1.25rem; max-height:560px; overflow:auto; word-break:break-word;
+  font-family:var(--ny-font); color:var(--ny-text);
+  box-shadow:3px 3px 0 rgba(26,22,18,.07); }
+.lyric-box .ln{ padding:.18rem 0; border-bottom:1px dashed var(--ny-hairline); }
+.lyric-box .ln:last-child{ border-bottom:none; }
+.lyric-box .ln-blank{ height:.5rem; border-bottom:none; }
+.lyric-box .ln-ts{ color:var(--ny-brand); font-family:var(--ny-mono); font-size:.76rem; }
+.lyric-box .ln-orig{ font-size:1rem; line-height:1.7; color:var(--ny-text); }
+.lyric-box .ln-roma{ font-family:var(--ny-mono); font-size:.8rem; line-height:1.5; color:var(--ny-blue); }
+.lyric-box .ln-trans{ font-size:.88rem; line-height:1.6; color:var(--ny-text-2); }
+
 /* ===== 动效降级 ===== */
 @media (prefers-reduced-motion: reduce){ *{ animation:none !important; transition:none !important; } }
 """
@@ -203,6 +217,7 @@ CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 STOPWORDS = set("的了和在是不有我你他她它这那什么就都一个也会很觉得真的喜欢歌听音乐唱专辑评论朋友人又才还对没要吧啊呀呢".strip())
 
 LAST_STATE_FILE = os.path.join("output", ".last_session.json")
+LYRIC_STATE_FILE = os.path.join("output", ".last_lyrics.json")
 
 
 def save_last_state(res):
@@ -224,6 +239,39 @@ def clear_last_state():
         pass
 
 
+def save_lyrics(lyrics):
+    """将歌词数据落盘，刷新浏览器后仍可恢复查看。"""
+    if not lyrics:
+        return
+    try:
+        os.makedirs(os.path.dirname(LYRIC_STATE_FILE), exist_ok=True)
+        with open(LYRIC_STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(lyrics, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def load_lyrics():
+    if not os.path.exists(LYRIC_STATE_FILE):
+        return None
+    try:
+        with open(LYRIC_STATE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict) and data:
+            return data
+    except Exception:
+        return None
+    return None
+
+
+def clear_lyrics_state():
+    try:
+        if os.path.exists(LYRIC_STATE_FILE):
+            os.remove(LYRIC_STATE_FILE)
+    except Exception:
+        pass
+
+
 def try_load_last_state():
     if not os.path.exists(LAST_STATE_FILE):
         return None
@@ -238,6 +286,10 @@ def try_load_last_state():
 
 
 def restore_state():
+    if "lyrics" not in st.session_state:
+        lyr = load_lyrics()
+        if lyr:
+            st.session_state["lyrics"] = lyr
     if "songs" in st.session_state and st.session_state["songs"]:
         return
     res = try_load_last_state()
@@ -268,6 +320,92 @@ def do_search(kw):
         st.session_state["search_results"] = []
         st.session_state["search_keyword"] = kw
         st.session_state["search_error"] = str(e)
+
+
+def fetch_lyrics_section(song_list):
+    """仅爬取所选歌曲的歌词（不含评论/情感分析），结果存入 session 并落盘。"""
+    song_list = [s for s in (song_list or []) if s.get("song_id")]
+    if not song_list:
+        st.warning("请先勾选需要爬取歌词的歌曲。")
+        return
+    crawler = NeteaseCrawler(sleep=request_sleep, timeout=cfg["crawler"]["timeout"],
+                             max_retries=cfg["crawler"]["max_retries"])
+    status = st.status("正在爬取歌词...", expanded=True)
+    prog = st.progress(0.0, text="准备中")
+    store = dict(get_state("lyrics", {}) or {})
+    total = len(song_list)
+    ok = 0
+    n_trans = 0
+    try:
+        for i, s in enumerate(song_list, 1):
+            sid = s["song_id"]
+            name = s.get("name") or str(sid)
+            status.write(f"({i}/{total}) 正在获取歌词：{name}")
+            try:
+                lf = crawler.get_lyric_full(sid)
+            except Exception as e:
+                lf = {"lyric": "", "trans": "", "roma": ""}
+                status.write(f"    获取失败：{e}")
+            old = store.get(str(sid)) or {}
+            # 字段级合并：新抓到的优先；本次为空则保留缓存旧值，
+            # 避免瞬时失败的空结果覆盖已有好数据，同时可刷新出翻译/罗马音
+            lyric = (lf.get("lyric") or "") or (old.get("lyric") or "")
+            trans = (lf.get("trans") or "") or (old.get("trans") or "")
+            roma = (lf.get("roma") or "") or (old.get("roma") or "")
+            if lyric.strip():
+                ok += 1
+            if trans.strip():
+                n_trans += 1
+            store[str(sid)] = {
+                "song_id": sid,
+                "name": s.get("name") or (old.get("name") or ""),
+                "artists": s.get("artists") or (old.get("artists") or []),
+                "album": s.get("album") or (old.get("album") or ""),
+                "lyric": lyric,
+                "trans": trans,
+                "roma": roma,
+            }
+            prog.progress(i / total, text=f"已完成 {i}/{total}")
+        st.session_state["lyrics"] = store
+        save_lyrics(store)
+        prog.progress(1.0, text="完成")
+        status.update(label=f"歌词爬取完成（{total} 首 · 含歌词 {ok} · 含翻译 {n_trans}）",
+                      state="complete", expanded=False)
+        st.success(f"已获取 {total} 首歌词，其中 {ok} 首含歌词、{n_trans} 首含翻译。"
+                   "请切换到「歌词」标签页查看。")
+    except Exception as e:
+        status.update(label="歌词爬取失败", state="error", expanded=True)
+        st.error(f"歌词爬取失败：{e}")
+
+
+def refetch_one_lyric(song_id):
+    """重新获取单首歌曲的歌词/翻译/罗马音并更新缓存（用于修复失败或过期条目）。"""
+    crawler = NeteaseCrawler(sleep=request_sleep, timeout=cfg["crawler"]["timeout"],
+                             max_retries=cfg["crawler"]["max_retries"])
+    store = dict(get_state("lyrics", {}) or {})
+    old = store.get(str(song_id)) or {}
+    try:
+        lf = crawler.get_lyric_full(song_id)
+    except Exception as e:
+        st.error(f"重新获取失败：{e}")
+        return
+    merged = {
+        "song_id": song_id,
+        "name": old.get("name") or "",
+        "artists": old.get("artists") or [],
+        "album": old.get("album") or "",
+        "lyric": (lf.get("lyric") or "") or (old.get("lyric") or ""),
+        "trans": (lf.get("trans") or "") or (old.get("trans") or ""),
+        "roma": (lf.get("roma") or "") or (old.get("roma") or ""),
+    }
+    store[str(song_id)] = merged
+    st.session_state["lyrics"] = store
+    save_lyrics(store)
+    if merged["lyric"].strip():
+        st.toast(f"已重新获取：{merged['name'] or song_id}")
+    else:
+        st.warning("接口仍未返回该歌曲的歌词（可能为纯音乐或无版权）。")
+    st.rerun()
 
 
 
@@ -381,6 +519,113 @@ def build_wordcloud_png(words, width=820, height=430):
     return buf.getvalue()
 
 
+_LRC_TS_RE = re.compile(r"\[(\d{1,3}):(\d{2})(?:\.(\d{1,3}))?\]")
+_LRC_META_RE = re.compile(r"^\[[a-zA-Z#@].*\]$")
+
+
+def _parse_lrc(text):
+    """解析 LRC，返回 {秒(float): 文本}；一行多时间戳会展开，无时间戳的行忽略。"""
+    out = {}
+    for raw in (text or "").splitlines():
+        matches = list(_LRC_TS_RE.finditer(raw))
+        if not matches:
+            continue
+        content = _LRC_TS_RE.sub("", raw).strip()
+        for m in matches:
+            frac = (m.group(3) or "0").ljust(3, "0")[:3]
+            sec = int(m.group(1)) * 60 + int(m.group(2)) + int(frac) / 1000.0
+            out[round(sec, 2)] = content
+    return out
+
+
+def _plain_lines(text):
+    """无时间轴时的兜底：返回去除元信息([ar:]等)与空行后的纯文本行。"""
+    res = []
+    for ln in (text or "").splitlines():
+        s = ln.strip()
+        if not s or _LRC_META_RE.match(s):
+            continue
+        res.append(s)
+    return res
+
+
+def _fmt_ts(sec):
+    mm = int(sec // 60)
+    return f"[{mm:02d}:{sec - mm * 60:05.2f}]"
+
+
+def merge_lrc(lyric, trans="", roma=""):
+    """按时间轴对齐合并原文/译文/罗马音，返回行列表；无时间轴时按行序对齐兜底。"""
+    o = _parse_lrc(lyric)
+    if o:
+        t = _parse_lrc(trans)
+        r = _parse_lrc(roma)
+        times = sorted(set(o) | set(t) | set(r))
+        return [{"ts": _fmt_ts(x), "orig": o.get(x, ""),
+                 "trans": t.get(x, ""), "roma": r.get(x, "")} for x in times]
+    ol, tl, rl = _plain_lines(lyric), _plain_lines(trans), _plain_lines(roma)
+    n = max(len(ol), len(tl), len(rl))
+    return [{"ts": "",
+             "orig": ol[i] if i < len(ol) else "",
+             "trans": tl[i] if i < len(tl) else "",
+             "roma": rl[i] if i < len(rl) else ""} for i in range(n)]
+
+
+def lyric_to_html(rows, show_ts=False, show_trans=False, show_roma=False):
+    """将合并后的歌词行渲染为纸刊风格 HTML 片段（原文/译文/罗马音分层）。"""
+    out = []
+    for row in rows:
+        orig = (row.get("orig") or "").strip()
+        trans = (row.get("trans") or "").strip()
+        roma = (row.get("roma") or "").strip()
+        if not (orig or trans or roma):
+            out.append('<div class="ln ln-blank"></div>')
+            continue
+        ts = row.get("ts") or ""
+        ts_html = (f'<span class="ln-ts">{html.escape(ts)}</span> '
+                   if (show_ts and ts) else "")
+        blocks = []
+        if show_roma and roma:
+            blocks.append(f'<div class="ln-roma">{html.escape(roma)}</div>')
+        if orig or ts_html:
+            blocks.append(f'<div class="ln-orig">{ts_html}{html.escape(orig)}</div>')
+        if show_trans and trans:
+            blocks.append(f'<div class="ln-trans">{html.escape(trans)}</div>')
+        out.append('<div class="ln">' + "".join(blocks) + "</div>")
+    return "".join(out)
+
+
+def build_download_text(rows, show_trans=False, show_roma=False):
+    """按当前显示选项生成纯文本歌词（用于下载 TXT）。"""
+    out = []
+    for row in rows:
+        if show_roma and (row.get("roma") or "").strip():
+            out.append(row["roma"].strip())
+        if (row.get("orig") or "").strip():
+            out.append(row["orig"].strip())
+        if show_trans and (row.get("trans") or "").strip():
+            out.append(row["trans"].strip())
+    return "\n".join(out)
+
+
+def strip_lrc_ts(text):
+    """去除时间轴标签，返回纯歌词文本（保留兼容工具函数）。"""
+    lines = [_LRC_TS_RE.sub("", ln).strip() for ln in (text or "").splitlines()]
+    return "\n".join(ln for ln in lines if ln and not _LRC_META_RE.match(ln))
+
+
+def cjk_ratio(text):
+    """统计汉字在文字字符（汉字/拉丁/假名/谚文）中的占比，用于判断是否为中文原文。
+
+    中文≈1.0；日文含假名≈0.3~0.5；英文/韩文≈0。以 0.6 为阈值区分中文与非中文。
+    """
+    s = text or ""
+    cjk = len(re.findall(r"[\u4e00-\u9fff]", s))
+    other = len(re.findall(r"[A-Za-z\u3040-\u30ff\uac00-\ud7af]", s))
+    denom = cjk + other
+    return cjk / denom if denom else 0.0
+
+
 # ---------------------------------------------------------------- sidebar
 
 cfg, _ = load_config()
@@ -439,9 +684,10 @@ else:
                         "或将 sentiment.engine 改为 local 使用本地分析。")
 
 if sidebar.button("清空结果", width="stretch"):
-    for k in ["songs", "result", "keyword", "search_results", "search_keyword"]:
+    for k in ["songs", "result", "keyword", "search_results", "search_keyword", "lyrics"]:
         st.session_state.pop(k, None)
     clear_last_state()
+    clear_lyrics_state()
     st.rerun()
 
 if submitted:
@@ -487,7 +733,8 @@ def run_section(kw, song_ids=None, limit=None):
 
 hero()
 
-t1, t2, t3, t4, t5 = st.tabs(["搜索/爬取", "情感总览", "评论分析", "词云", "导出"])
+t1, t_lyric, t2, t3, t4, t5 = st.tabs(
+    ["搜索/爬取", "歌词", "情感总览", "评论分析", "词云", "导出"])
 
 
 # ==================== Tab1 搜索与爬取 ====================
@@ -515,10 +762,23 @@ with t1:
             sdf.index = [r["song_id"] for r in results]
             ev = st.dataframe(sdf, width="stretch", on_select="rerun",
                               selection_mode="multi-row", key="song_select", hide_index=True)
-            sel_ids = [results[int(i)]["song_id"] for i in (ev.selection.rows or [])]
-            if st.button("爬取所选歌曲", type="primary", width="stretch",
-                         disabled=not sel_ids):
+            select_all = st.checkbox(f"全选所有搜索结果（{len(results)} 首）",
+                                     key="select_all_songs")
+            if select_all:
+                sel_songs = list(results)
+            else:
+                sel_songs = [results[int(i)] for i in (ev.selection.rows or [])]
+            sel_ids = [s["song_id"] for s in sel_songs]
+            st.caption(f"已选 {len(sel_ids)} 首。")
+            b_full, b_lyric = st.columns(2)
+            if b_full.button("爬取所选歌曲", type="primary", width="stretch",
+                             disabled=not sel_ids,
+                             help="抓取所选歌曲的专辑/歌词/评论并做情感分析"):
                 run_section(keyword.strip(), song_ids=sel_ids)
+            if b_lyric.button("仅爬取所选歌词", width="stretch",
+                              disabled=not sel_ids,
+                              help="只抓取所选歌曲的歌词，速度快，结果在「歌词」标签页查看"):
+                fetch_lyrics_section(sel_songs)
 
     with c_run:
         st.subheader("直接爬取")
@@ -539,6 +799,102 @@ with t1:
 # 数据读取放在 Tab1 之后，确保本次运行中 run_section 写入的结果能立即被其它标签页使用
 songs = get_state("songs", [])
 result = get_state("result", None)
+
+
+# ==================== Tab 歌词 ====================
+
+with t_lyric:
+    lyrics = get_state("lyrics", {}) or {}
+    if not lyrics:
+        st.info("还没有歌词数据。请先在「搜索/爬取」页搜索歌曲，勾选（或全选）后点击「仅爬取所选歌词」。")
+    else:
+        keys = list(lyrics.keys())
+
+        def _lyric_label(k):
+            it = lyrics[k]
+            artists = "/".join(it.get("artists") or [])
+            base = it.get("name") or str(it.get("song_id") or k)
+            return f"{base} - {artists}" if artists else base
+
+        c_pick, c_opt = st.columns([2, 1])
+        sel_key = c_pick.selectbox("选择歌曲", keys, format_func=_lyric_label,
+                                   key="lyric_view_song")
+        show_ts = c_opt.toggle("显示时间轴", value=False, key="lyric_show_ts",
+                               help="开启后保留 LRC 的 [分:秒.毫秒] 时间标签")
+        it = lyrics[sel_key]
+        lyric_text = (it.get("lyric") or "").strip()
+        trans_text = (it.get("trans") or "").strip()
+        roma_text = (it.get("roma") or "").strip()
+
+        st.subheader(f"歌词 · {it.get('name') or sel_key}")
+        meta_parts = [x for x in ["/".join(it.get("artists") or []), it.get("album")] if x]
+        if trans_text:
+            meta_parts.append("含翻译")
+        if roma_text:
+            meta_parts.append("含罗马音")
+        if meta_parts:
+            st.caption(" · ".join(meta_parts))
+
+        if st.button("重新获取本首（刷新歌词/翻译/罗马音）",
+                     key=f"refetch_{sel_key}",
+                     help="当显示「未获取到歌词」或翻译/罗马音缺失时，点击重新向接口拉取本首"):
+            refetch_one_lyric(it.get("song_id") or int(sel_key))
+
+        if not lyric_text and not trans_text:
+            st.warning("该歌曲未获取到歌词（可能为纯音乐、无版权或接口未返回）。可点击上方「重新获取本首」重试。")
+        else:
+            rows = merge_lrc(lyric_text, trans_text, roma_text)
+            # 智能默认：原文非中文（cjk 占比 < 0.6）且存在翻译时，默认开启双语对照
+            non_cjk = cjk_ratio(" ".join(r["orig"] for r in rows)) < 0.6
+            default_trans = bool(trans_text) and non_cjk
+
+            o1, o2 = st.columns(2)
+            show_trans = o1.toggle("显示翻译（双语对照）", value=default_trans,
+                                   key=f"lyric_show_trans_{sel_key}",
+                                   disabled=not trans_text,
+                                   help="原文与译文按时间轴逐行对照显示"
+                                        if trans_text else "该歌曲暂无翻译歌词")
+            show_roma = o2.toggle("显示罗马音", value=False,
+                                  key=f"lyric_show_roma_{sel_key}",
+                                  disabled=not roma_text,
+                                  help="日/韩歌曲的罗马音标注"
+                                       if roma_text else "该歌曲暂无罗马音")
+            if not trans_text:
+                st.caption("该歌曲暂无翻译歌词，仅显示原文。")
+
+            d1, d2 = st.columns(2)
+            safe_name = re.sub(r'[\\/:*?"<>|]', "_", it.get("name") or str(sel_key))
+            d1.download_button("下载 LRC（原文含时间轴）", data=lyric_text.encode("utf-8"),
+                               file_name=f"{safe_name}.lrc", mime="text/plain",
+                               width="stretch", key=f"dl_lrc_{sel_key}",
+                               disabled=not lyric_text)
+            suffix = "双语" if (show_trans or show_roma) else "原文"
+            dl_txt = build_download_text(rows, show_trans, show_roma)
+            d2.download_button(f"下载 TXT（{suffix}）", data=dl_txt.encode("utf-8"),
+                               file_name=f"{safe_name}_{suffix}.txt", mime="text/plain",
+                               width="stretch", key=f"dl_txt_{sel_key}")
+
+            st.markdown(
+                '<div class="lyric-box">'
+                + lyric_to_html(rows, show_ts, show_trans, show_roma)
+                + "</div>", unsafe_allow_html=True)
+
+        with st.expander(f"本次已爬取歌词的全部歌曲（{len(keys)} 首）"):
+            rows_all = []
+            for k in keys:
+                v = lyrics[k]
+                lrc = (v.get("lyric") or "").strip()
+                tr = (v.get("trans") or "").strip()
+                ro = (v.get("roma") or "").strip()
+                rows_all.append({
+                    "歌名": v.get("name") or str(v.get("song_id") or k),
+                    "歌手": "/".join(v.get("artists") or []),
+                    "专辑": v.get("album") or "",
+                    "歌词": "有" if lrc else "无",
+                    "翻译": "有" if tr else "—",
+                    "罗马音": "有" if ro else "—",
+                })
+            st.dataframe(pd.DataFrame(rows_all), width="stretch", hide_index=True)
 
 
 # ==================== Tab2 情感总览 ====================

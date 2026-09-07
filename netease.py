@@ -137,9 +137,18 @@ class NeteaseCrawler:
             "comment_count": s.get("commentThreadId"),
         }
 
+    def get_lyric_full(self, song_id):
+        """返回结构化歌词：原文 / 翻译 / 罗马音，均带 LRC 时间轴，字段可能为空。"""
+        data = self._get(API_LYRIC, params={
+            "id": song_id, "lv": -1, "kv": -1, "tv": -1, "rv": -1})
+        return {
+            "lyric": (data.get("lrc") or {}).get("lyric") or "",
+            "trans": (data.get("tlyric") or {}).get("lyric") or "",
+            "roma": (data.get("romalrc") or {}).get("lyric") or "",
+        }
+
     def get_lyric(self, song_id):
-        data = self._get(API_LYRIC, params={"id": song_id, "lv": -1, "kv": -1, "tv": -1})
-        return (data.get("lrc") or {}).get("lyric") or ""
+        return self.get_lyric_full(song_id)["lyric"]
 
     @staticmethod
     def _normalize_comment(c):
